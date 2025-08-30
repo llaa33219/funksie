@@ -1,60 +1,124 @@
 /* ------------------------------------------------------------------
-   injected.js  v1.4 – Entry Variable Automator
+   injected.js  v1.5 – Entry Variable Automator
    - ?링크 열기: playentry.org 내부 링크 직접, 외부는 redirect
    - javascript:, data:, vbscript: 등 스크립트 URL 차단
+   - SPA 탐색 지원 (iframe 교체 시 재초기화)
 ------------------------------------------------------------------ */
 
-(function watchAndSetEntryVar() {
-  /* ───────── 0) iframe & Entry 대기 ────────────────────────── */
-  const iframe = document.querySelector('iframe');
-  if (!iframe) return setTimeout(watchAndSetEntryVar, 500);
-
-  const ed = iframe.contentWindow;
-  if (!ed.Entry || !ed.Entry.variableContainer)
-    return setTimeout(watchAndSetEntryVar, 500);
-
-  const VC = ed.Entry.variableContainer;
-
-  /* ───────── 1) 기본 변수 확보 ─────────────────────────────── */
-  const V = {
-    funksie:    VC.getVariableByName('?funksie'),
-    fullscreen: VC.getVariableByName('?전체화면'),
-    os:         VC.getVariableByName('?운영체제'),
-    cursor:     VC.getVariableByName('?마우스 커서'),
-    scroll:     VC.getVariableByName('?스크롤'),
-    rc:         VC.getVariableByName('?우클릭'),
-    res:        VC.getVariableByName('?화면 해상도')
-  };
-
-  if (V.funksie) V.funksie.value_ = 'TRUE';
-  if (V.os)      V.os.value_      = detectOS(navigator.userAgent || '');
-
-  /* ───────── 2) ?전체화면 – host body.modal_open 감시 ──────── */
-  if (V.fullscreen) {
-    const hostBody = document.body;
-    const upd = () =>
-      (V.fullscreen.value_ = hostBody.classList.contains('modal_open') ? 'TRUE' : 'FALSE');
-    upd();
-    new MutationObserver(upd)
-      .observe(hostBody, { attributes: true, attributeFilter: ['class'] });
-    setInterval(upd, 1000);
+(function() {
+  // URL 패턴 검사 함수
+  function isAllowedURL() {
+    const url = window.location.href;
+    const patterns = [
+      /^https:\/\/playentry\.org\/project\//,
+      /^https:\/\/playentry\.org\/iframe\//,
+      /^https:\/\/playentry\.org\/noframe\//,
+      /^https:\/\/playentry\.org\/ws\//
+    ];
+    return patterns.some(pattern => pattern.test(url));
   }
 
-  /* ───────── 3) ?마우스 커서 – 캔버스 내부 적용 ────────────── */
-  if (V.cursor) handleCursor(V.cursor, ed);
+  // 허용되지 않는 URL이면 스크립트 실행 중단
+  if (!isAllowedURL()) {
+    return;
+  }
 
-  /* ───────── 4) 캔버스 기능 (?스크롤/?우클릭/?해상도) ──────── */
-  waitCanvas(ed.document, canvas => {
-    handleScroll(canvas, V.scroll);
-    handleRightClick(canvas, V.rc);
-    handleResolution(canvas, V.res);
-  });
+  // project/* URL인지 확인 (iframe 체크가 필요한 경우)
+  function shouldUseIframe() {
+    return /^https:\/\/playentry\.org\/project\//.test(window.location.href);
+  }
 
-  /* ───────── 5) ?유저id 덮어쓰기 루프 ─────────────────────── */
-  startUserIdLoop();
+  let initializedIframe = null;
+  let isUsingIframe = shouldUseIframe();
+  const observers = []; // ResizeObserver, MutationObserver 등 정리용 배열
+  const timers = []; // setInterval 등 타이머 ID 저장 배열
 
-  /* ───────── 6) ?링크 열기 오버레이 ───────────────────────── */
-  handleLinkOverlay();
+  // 모든 옵저버와 타이머를 정리하는 함수
+  function cleanup() {
+    observers.forEach(o => o.disconnect());
+    observers.length = 0;
+    timers.forEach(t => clearInterval(t));
+    timers.length = 0;
+  }
+
+  function initialize() {
+    if (isUsingIframe) {
+      // project/* URL - iframe에서 Entry 찾기
+      const iframe = document.querySelector('iframe');
+      if (!iframe || iframe === initializedIframe) {
+        return;
+      }
+      
+      // 이전 리소스 정리
+      cleanup();
+
+      initializedIframe = iframe;
+      watchAndSetEntryVar(iframe);
+    } else {
+      // 다른 URL - 호스트 페이지에서 Entry 찾기
+      if (initializedIframe !== null) {
+        return; // 이미 초기화됨
+      }
+      
+      // 이전 리소스 정리
+      cleanup();
+
+      initializedIframe = true; // 초기화 완료 표시
+      watchAndSetEntryVar(null); // null을 전달하여 호스트 페이지에서 Entry 찾기
+    }
+  }
+
+  function watchAndSetEntryVar(iframe) {
+    /* ───────── 0) Entry 대기 ────────────────────────── */
+    const ed = iframe ? iframe.contentWindow : window;
+    if (!ed.Entry || !ed.Entry.variableContainer) {
+      setTimeout(() => watchAndSetEntryVar(iframe), 250);
+      return;
+    }
+
+    const VC = ed.Entry.variableContainer;
+
+    /* ───────── 1) 기본 변수 확보 ─────────────────────────────── */
+    const V = {
+      funksie:    VC.getVariableByName('?funksie'),
+      fullscreen: VC.getVariableByName('?전체화면'),
+      os:         VC.getVariableByName('?운영체제'),
+      cursor:     VC.getVariableByName('?마우스 커서'),
+      scroll:     VC.getVariableByName('?스크롤'),
+      rc:         VC.getVariableByName('?우클릭'),
+      res:        VC.getVariableByName('?화면 해상도')
+    };
+
+    if (V.funksie) V.funksie.value_ = 'TRUE';
+    if (V.os)      V.os.value_      = detectOS(navigator.userAgent || '');
+
+    /* ───────── 2) ?전체화면 – host body.modal_open 감시 ──────── */
+    if (V.fullscreen) {
+      const hostBody = document.body;
+      const upd = () =>
+        (V.fullscreen.value_ = hostBody.classList.contains('modal_open') ? 'TRUE' : 'FALSE');
+      upd();
+      const obs = new MutationObserver(upd);
+      obs.observe(hostBody, { attributes: true, attributeFilter: ['class'] });
+      observers.push(obs);
+    }
+
+    /* ───────── 3) ?마우스 커서 – 전역 적용 ────────────── */
+    if (V.cursor) handleCursor(V.cursor, timers);
+
+    /* ───────── 4) 캔버스 기능 (?스크롤/?우클릭/?해상도) ──────── */
+    waitCanvas(iframe ? ed.document : document, canvas => {
+      handleScroll(canvas, V.scroll);
+      handleRightClick(canvas, V.rc);
+      handleResolution(canvas, V.res, observers);
+    });
+
+    /* ───────── 5) 사용자 정보 변수들 설정 루프 ─────────────────────── */
+    startUserInfoLoop(VC, timers);
+
+    /* ───────── 6) ?링크 열기 오버레이 ───────────────────────── */
+    handleLinkOverlay(VC, V, ed, timers);
+  }
 
   /* =================================================================
        HELPER FUNCTIONS
@@ -115,49 +179,60 @@
   }
 
   /* 해상도 변수 */
-  function handleResolution(canvas, v) {
+  function handleResolution(canvas, v, obsArray) {
     if (!v) return;
     const upd = () => (v.value_ = `${canvas.width}x${canvas.height}`);
     upd();
-    new ResizeObserver(upd).observe(canvas);
+    const obs = new ResizeObserver(upd);
+    obs.observe(canvas);
+    if (obsArray) obsArray.push(obs);
   }
 
-  /* ───────── 마우스 커서 – 캔버스 내부 적용 ─────────────── */
-  function handleCursor(varObj, entryWin) {
-    let last = '';
-
-    /* 동일-출처 frame 내부 캔버스 수집 */
-    const getCanvases = root => {
-      const out = [];
-      const dfs = w => {
-        try {
-          const doc = w.document;
-          doc.querySelectorAll('#entryCanvas, canvas.entryCanvasWorkspace')
-             .forEach(c => out.push(c));
-          for (const f of w.frames) dfs(f);
-        } catch (_) {}
-      };
-      dfs(root);
-      return out;
-    };
+  /* ───────── 마우스 커서 – 전역 적용 ─────────────── */
+  function handleCursor(varObj, timers) {
+    let lastValue = varObj.value_;
 
     const apply = url => {
-      getCanvases(entryWin).forEach(c => {
-        c.style.cursor = `url("${url}") 0 0, auto`;
-      });
+      // URL 유효성 검사 및 보정
+      let finalUrl = url;
+      if (!finalUrl || finalUrl === 'NONE' || !/\.(png|jpg|jpeg|gif|svg|cur)$/i.test(finalUrl)) {
+        finalUrl = ''; // 유효하지 않으면 기본값으로
+      } else if (finalUrl.startsWith('http:')) {
+        finalUrl = finalUrl.replace('http:', 'https:');
+      }
+
+      const cursorStyle = finalUrl ? `url("${finalUrl}") 0 0, auto` : 'auto';
+      
+      // 페이지 전체(body)와 Entry iframe의 body에 커서 스타일 적용
+      document.body.style.cursor = cursorStyle;
+      if (initializedIframe && initializedIframe.contentDocument) {
+        initializedIframe.contentDocument.body.style.cursor = cursorStyle;
+      }
     };
 
-    if (varObj.value_) { last = varObj.value_; apply(last); }
-    setInterval(() => {
-      const cur = varObj.value_;
-      if (cur && cur !== last) { last = cur; apply(cur); }
-    }, 300);
+    // 초기값 적용
+    apply(lastValue);
+
+    // 폴링으로 값 변경 감시
+    const timerId = setInterval(() => {
+      const currentValue = varObj.value_;
+      if (currentValue !== lastValue) {
+        lastValue = currentValue;
+        apply(currentValue);
+      }
+    }, 250);
+    timers.push(timerId);
   }
 
-  /* ───────── ?유저id 덮어쓰기 ─────────────────────────── */
-  function startUserIdLoop() {
+  /* ───────── 사용자 정보 변수들 설정 ─────────────────────────── */
+  function startUserInfoLoop(VC, timers) {
     const userVar = VC.getVariableByName('?유저id');
-    if (!userVar) return;
+    const createdVar = VC.getVariableByName('?계정생성일자');
+    const roleVar = VC.getVariableByName('?계정유형');
+    const profileIdVar = VC.getVariableByName('?프로필id');
+    const emailAuthVar = VC.getVariableByName('?이메일 인증 여부');
+    
+    if (!userVar && !createdVar && !roleVar && !profileIdVar && !emailAuthVar) return;
 
     const getXToken = () => {
       const el = document.getElementById('__NEXT_DATA__');
@@ -179,9 +254,63 @@
       document.cookie.match(/csrfToken=([^;]+)/)?.[1] || '';
 
     const GQL = `
-      query SELECT_TOPICS($pageParam: PageParam, $searchAfter: JSON){
-        topicList(pageParam: $pageParam, searchAfter: $searchAfter){
-          list { target }
+      query FIND_PERSONAL_INFO {
+        me {
+          id
+          username
+          nickname
+          role
+          isEmailAuth
+          isSnsAuth
+          isPhoneAuth
+          studentTerm
+          status {
+            userStatus
+          }
+          profileImage {
+            id
+            name
+            label {
+              ko
+              en
+              ja
+              vn
+            }
+            filename
+            imageType
+            dimension {
+              width
+              height
+            }
+            trimmed {
+              filename
+              width
+              height
+            }
+          }
+          banned {
+            username
+            nickname
+            reason
+            bannedCount
+            bannedType
+            projectId
+            startDate
+            userReflect {
+              status
+              endDate
+            }
+          }
+          isProfileBlocked
+          created
+        }
+        personalInfo {
+          mobile
+          email
+          grade
+          gender
+          isSnsJoinUser
+          snsCd
         }
       }`.replace(/\s+/g, ' ');
 
@@ -191,7 +320,7 @@
       if (!csrf || !xTok) return;
 
       try {
-        const res = await fetch('https://playentry.org/graphql/SELECT_TOPICS', {
+        const res = await fetch('https://playentry.org/graphql/FIND_PERSONAL_INFO', {
           method: 'POST',
           credentials: 'include',
           headers: {
@@ -202,23 +331,49 @@
           },
           body: JSON.stringify({
             query: GQL,
-            variables: { pageParam: { display: 5 } }
+            variables: {}
           })
         });
         const json = await res.json();
-        const target = json?.data?.topicList?.list?.[0]?.target;
-        if (target) userVar.value_ = target;
+        const me = json?.data?.me;
+        if (me) {
+          // ?유저id 설정
+          if (userVar && me.id) {
+            userVar.value_ = me.id;
+          }
+          
+          // ?계정생성일자 설정 (me.created)
+          if (createdVar && me.created) {
+            createdVar.value_ = me.created;
+          }
+          
+          // ?계정유형 설정 (me.role)
+          if (roleVar && me.role) {
+            roleVar.value_ = me.role;
+          }
+          
+          // ?프로필id 설정 (me.profileImage.id)
+          if (profileIdVar && me.profileImage?.id) {
+            profileIdVar.value_ = me.profileImage.id;
+          }
+          
+          // ?이메일 인증 여부 설정 (me.isEmailAuth)
+          if (emailAuthVar && typeof me.isEmailAuth === 'boolean') {
+            emailAuthVar.value_ = me.isEmailAuth ? 'TRUE' : 'FALSE';
+          }
+        }
       } catch (e) {
-        console.error('SELECT_TOPICS 실패:', e);
+        console.error('FIND_PERSONAL_INFO 실패:', e);
       }
     };
 
     fetchAndSet();
-    setInterval(fetchAndSet, 60_000);
+    const timerId = setInterval(fetchAndSet, 60_000);
+    timers.push(timerId);
   }
 
   /* ───────── ?링크 열기 – 오버레이 처리 ───────────────── */
-  function handleLinkOverlay() {
+  function handleLinkOverlay(VC, V, ed, timers) {
     const linkVar = VC.getVariableByName('?링크 열기');
     if (!linkVar) return;
 
@@ -339,7 +494,7 @@
     let lastLink = linkVar.value_;
     let lastFull = V.fullscreen ? V.fullscreen.value_ : null;
 
-    setInterval(() => {
+    const timerId = setInterval(() => {
       /* 1️⃣ 링크 값 변경 */
       const curRaw  = linkVar.value_;
       const safeURL = normalizeLink(curRaw);
@@ -367,5 +522,15 @@
         lastFull = curFull;
       }
     }, 300);
+    timers.push(timerId);
   }
-})(); // watchAndSetEntryVar 끝
+
+  // 초기 실행
+  initialize();
+  
+  // SPA 네비게이션을 감지하기 위해 주기적으로 iframe 확인 (project/* URL만)
+  if (isUsingIframe) {
+    setInterval(initialize, 1000);
+  }
+})(); // 즉시 실행 함수 끝
+
